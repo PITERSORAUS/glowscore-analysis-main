@@ -14,6 +14,33 @@ export type Database = {
   }
   public: {
     Tables: {
+      analysis_results: {
+        Row: {
+          access_code: string
+          analysis_result: Json
+          created_at: string
+          id: string
+          paid: boolean
+          quiz_answers: Json
+        }
+        Insert: {
+          access_code: string
+          analysis_result: Json
+          created_at?: string
+          id?: string
+          paid?: boolean
+          quiz_answers: Json
+        }
+        Update: {
+          access_code?: string
+          analysis_result?: Json
+          created_at?: string
+          id?: string
+          paid?: boolean
+          quiz_answers?: Json
+        }
+        Relationships: []
+      }
       payments: {
         Row: {
           created_at: string

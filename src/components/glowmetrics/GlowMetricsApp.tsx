@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Quiz } from './Quiz';
 import { SelfieUpload } from './SelfieUpload';
 import { FreeResult } from './FreeResult';
@@ -7,7 +7,12 @@ import { PremiumContent } from './PremiumContent';
 import { QuizAnswers, AnalysisResult, ChecklistDay } from '@/types/glowmetrics';
 import { generateAnalysis, generateChecklist } from '@/lib/analysis-engine';
 import { supabase } from '@/integrations/supabase/client';
+import { createAnalysisRecord, fetchAnalysisByAccessCode, markAnalysisPaid } from '@/lib/analysis-storage';
+import { isRealAnalysisConfigured, requestRealAnalysis } from '@/lib/analysis-service';
+import { useFacemeshAnalysis } from '@/hooks/useFacemeshAnalysis';
 import { Sparkles } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 
 type AppStage = 'quiz' | 'upload' | 'result';
 
@@ -21,7 +26,13 @@ export function GlowMetricsApp() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [checklist, setChecklist] = useState<ChecklistDay[]>([]);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
-  const pdfContentRef = useRef<HTMLDivElement>(null);
+  const [analysisId, setAnalysisId] = useState<string | null>(null);
+  const [accessCode, setAccessCode] = useState('');
+  const [lookupCode, setLookupCode] = useState('');
+  const [lookupMessage, setLookupMessage] = useState('');
+  const [analysisMode, setAnalysisMode] = useState<'api' | 'facemesh' | 'simulated' | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const { analyze: analyzeWithFacemesh, error: facemeshError } = useFacemeshAnalysis();
 
   // Load payment status from localStorage
   useEffect(() => {
@@ -33,6 +44,11 @@ export function GlowMetricsApp() {
     const savedChecklist = localStorage.getItem('glowmetrics_checklist');
     if (savedChecklist) {
       setChecklist(JSON.parse(savedChecklist));
+    }
+
+    const savedAccessCode = localStorage.getItem('glowmetrics_access_code');
+    if (savedAccessCode) {
+      void handleAccessLookup(savedAccessCode);
     }
   }, []);
 
@@ -49,16 +65,56 @@ export function GlowMetricsApp() {
     if (!quizAnswers || !selfieFile) return;
 
     setIsGenerating(true);
+    setAnalysisError(null);
+    if (facemeshError) {
+      setAnalysisError(facemeshError);
+    }
     
     // Simulate AI analysis time
     await new Promise((resolve) => setTimeout(resolve, 2500 + Math.random() * 1500));
     
-    const result = generateAnalysis(quizAnswers, false);
+    let result: AnalysisResult | null = null;
+    try {
+      if (isRealAnalysisConfigured()) {
+        result = await requestRealAnalysis(quizAnswers, selfieFile);
+        setAnalysisMode('api');
+      } else {
+        result = await analyzeWithFacemesh(selfieFile, quizAnswers);
+        if (result) {
+          setAnalysisMode('facemesh');
+        } else {
+          result = generateAnalysis(quizAnswers, false);
+          setAnalysisMode('simulated');
+        }
+      }
+    } catch (error) {
+      console.error('Error generating analysis:', error);
+      result = generateAnalysis(quizAnswers, false);
+      setAnalysisMode('simulated');
+      setAnalysisError('Não foi possível usar a análise real. Geramos uma prévia simulada.');
+    }
+    if (!result) {
+      result = generateAnalysis(quizAnswers, false);
+      setAnalysisMode('simulated');
+      setAnalysisError('Não foi possível detectar o rosto. Geramos uma prévia simulada.');
+    }
     setAnalysisResult(result);
     
     const newChecklist = generateChecklist();
     setChecklist(newChecklist);
     
+    try {
+      const record = await createAnalysisRecord({
+        quizAnswers,
+        analysisResult: result,
+      });
+      setAnalysisId(record.id);
+      setAccessCode(record.accessCode);
+      localStorage.setItem('glowmetrics_access_code', record.accessCode);
+    } catch (error) {
+      console.error('Error saving analysis:', error);
+    }
+
     setIsGenerating(false);
     setStage('result');
   };
@@ -73,6 +129,9 @@ export function GlowMetricsApp() {
       await supabase.from('payments').insert({
         status: 'completed',
       });
+      if (analysisId) {
+        await markAnalysisPaid(analysisId);
+      }
     } catch (error) {
       console.error('Error saving payment:', error);
     }
@@ -183,6 +242,34 @@ export function GlowMetricsApp() {
     }
   };
 
+  const handleAccessLookup = async (code: string) => {
+    const normalizedCode = code.trim().toUpperCase();
+    if (!normalizedCode) {
+      setLookupMessage('Informe sua chave para acessar.');
+      return;
+    }
+
+    setLookupMessage('Buscando análise...');
+    try {
+      const record = await fetchAnalysisByAccessCode(normalizedCode);
+      if (!record) {
+        setLookupMessage('Chave não encontrada. Verifique e tente novamente.');
+        return;
+      }
+
+      setAnalysisResult(record.analysis_result);
+      setIsPaid(record.paid);
+      setAnalysisId(record.id);
+      setAccessCode(record.access_code);
+      setStage('result');
+      setLookupMessage('');
+      localStorage.setItem('glowmetrics_access_code', record.access_code);
+    } catch (error) {
+      console.error('Error loading analysis:', error);
+      setLookupMessage('Não foi possível carregar sua análise agora.');
+    }
+  };
+
   return (
     <div className="min-h-screen py-8 px-4">
       <div className="max-w-4xl mx-auto">
@@ -200,6 +287,30 @@ export function GlowMetricsApp() {
           </p>
         </header>
 
+        <section className="mb-10 max-w-xl mx-auto glass rounded-2xl p-6 border border-glass-border">
+          <h2 className="text-lg font-semibold mb-2 text-center">Já pagou e quer ver sua análise novamente?</h2>
+          <p className="text-sm text-muted-foreground text-center mb-4">
+            Digite sua chave única para acessar seu resultado completo.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Input
+              value={lookupCode}
+              onChange={(event) => setLookupCode(event.target.value)}
+              placeholder="Ex: GLOW1234"
+              className="uppercase"
+            />
+            <Button
+              onClick={() => handleAccessLookup(lookupCode)}
+              className="gradient-primary"
+            >
+              Acessar análise
+            </Button>
+          </div>
+          {lookupMessage && (
+            <p className="text-sm text-muted-foreground mt-3 text-center">{lookupMessage}</p>
+          )}
+        </section>
+
         {/* Main Content */}
         <main>
           {stage === 'quiz' && <Quiz onComplete={handleQuizComplete} />}
@@ -214,6 +325,11 @@ export function GlowMetricsApp() {
           
           {stage === 'result' && analysisResult && (
             <div className="space-y-8">
+              {analysisError && (
+                <div className="max-w-lg mx-auto text-center text-sm text-amber-500">
+                  {analysisError}
+                </div>
+              )}
               <FreeResult
                 result={analysisResult}
                 onUnlock={() => setShowPaymentModal(true)}
@@ -226,6 +342,8 @@ export function GlowMetricsApp() {
                   onChecklistUpdate={handleChecklistUpdate}
                   onDownloadPDF={handleDownloadPDF}
                   isGeneratingPDF={isGeneratingPDF}
+                  accessCode={accessCode}
+                  analysisMode={analysisMode}
                 />
               )}
             </div>

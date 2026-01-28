@@ -13,6 +13,8 @@ interface PremiumContentProps {
   onChecklistUpdate: (days: ChecklistDay[]) => void;
   onDownloadPDF: () => void;
   isGeneratingPDF: boolean;
+  accessCode?: string;
+  analysisMode: 'api' | 'facemesh' | 'simulated' | null;
 }
 
 export function PremiumContent({
@@ -21,8 +23,22 @@ export function PremiumContent({
   onChecklistUpdate,
   onDownloadPDF,
   isGeneratingPDF,
+  accessCode,
+  analysisMode,
 }: PremiumContentProps) {
   const potentialPercentage = ((result.potentialScore - result.globalScore) / result.globalScore) * 100;
+  const [hasCopied, setHasCopied] = useState(false);
+
+  const handleCopyAccessCode = async () => {
+    if (!accessCode) return;
+    try {
+      await navigator.clipboard.writeText(accessCode);
+      setHasCopied(true);
+      setTimeout(() => setHasCopied(false), 2000);
+    } catch (error) {
+      console.error('Error copying access code:', error);
+    }
+  };
 
   return (
     <div className="space-y-8 animate-slide-up">
@@ -34,6 +50,34 @@ export function PremiumContent({
         </span>
         <Crown className="w-5 h-5" />
       </div>
+
+      {analysisMode && (
+        <p className="text-center text-xs text-muted-foreground">
+          {analysisMode === 'api'
+            ? 'Análise gerada com IA real.'
+            : analysisMode === 'facemesh'
+              ? 'Análise gerada localmente com FaceMesh.'
+              : 'Análise simulada (configure o backend para IA real).'}
+        </p>
+      )}
+
+      {accessCode && (
+        <div className="glass rounded-2xl p-5 border border-glass-border max-w-xl mx-auto">
+          <p className="text-sm text-muted-foreground text-center">
+            Sua chave única de acesso
+          </p>
+          <div className="mt-3 flex flex-col sm:flex-row items-center justify-center gap-3">
+            <span className="text-lg font-semibold tracking-[0.2em]">{accessCode}</span>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleCopyAccessCode}
+            >
+              {hasCopied ? 'Copiado!' : 'Copiar chave'}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Full Score Display */}
       <div className="glass rounded-2xl p-6 md:p-8 border border-glass-border glow-box">
